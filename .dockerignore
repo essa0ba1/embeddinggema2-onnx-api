@@ -1,0 +1,14 @@
+__pycache__
+.vscode
+.pytest_cache
+.ruff_cache
+.git
+.gitignore
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.development
+.env.test
+.env.production
