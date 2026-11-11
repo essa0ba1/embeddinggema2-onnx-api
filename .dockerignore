@@ -1,4 +1,5 @@
 __pycache__
+models/
 .vscode
 .pytest_cache
 .ruff_cache

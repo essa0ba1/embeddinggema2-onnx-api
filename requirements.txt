@@ -1,6 +1,6 @@
 fastapi==0.162.2
 huggingface_hub==1.32.0
-numpy==1.21.5
+numpy==1.26.4
 onnxruntime-gpu
 Pillow==13.0.0
 pydantic==2.14.3
