@@ -8,6 +8,9 @@ import logging
 import warnings
 from PIL import Image, UnidentifiedImageError
 from io import BytesIO
+from urllib.parse import urlparse
+import httpx
+
 
 
 logging.basicConfig(level=logging.INFO)
@@ -90,6 +93,38 @@ def validate_image(image_bytes: bytes):
     return True
 
 
+def safe_b64decode(data: str, max_bytes: int = 10 * 1024 * 1024) -> bytes:
+    import base64
+    import binascii
+    if not isinstance(data, str) or not data.strip():
+        raise ValueError("Input must be a non-empty string.")
+
+    # 1. Strip Data URL header if present (e.g., "data:image/png;base64,")
+    if "," in data:
+        header, data = data.split(",", 1)
+        if not header.startswith("data:image/"):
+            raise ValueError("Invalid data URL header.")
+
+    # 2. Remove accidental whitespace/newlines
+    clean_data = "".join(data.split())
+
+    # 3. Check size BEFORE decoding to prevent memory exhaustion
+    # Base64 is ~33% larger than raw bytes
+    estimated_size = (len(clean_data) * 3) // 4
+    if estimated_size > max_bytes:
+        raise ValueError(f"Decoded size exceeds limit of {max_bytes} bytes.")
+
+    # 4. Normalize URL-safe Base64 ('-' and '_') to standard ('+' and '/')
+    clean_data = clean_data.replace("-", "+").replace("_", "/")
+
+    # 5. Decode with validate=True to reject invalid characters
+    try:
+        return base64.b64decode(clean_data, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Malformed Base64 data.") from exc
+
+
+
 class TextEmbeddingRequest(BaseModel):
     input_text : NonEmptyStr | NonEmptyStrList
     title : NonEmptyStr | NonEmptyStrList | None = None
@@ -110,8 +145,29 @@ class TextEmbeddingRequest(BaseModel):
         
         return self
         
+class Url(BaseModel):
+    url: NonEmptyStr
 
+    @staticmethod
+    def is_valid_url(url):
+        try:
+            result = urlparse(url)
+            return all([result.scheme, result.netloc])
+        except ValueError:
+            return False
 
+    @model_validator(mode="after")
+    def validate_url(self)-> Self : 
+        if self.is_valid_url(self.url):
+            return self
+        else: 
+            raise ValueError("unvalid url format, please provide a valid url with scheme (http or https) and domain name.")
+    async def get_image_bytes(self) -> bytes:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        async with httpx.AsyncClient() as client:
+            response = await client.get(self.url, headers=headers)
+            response.raise_for_status()
+            return response.content
 
 @app.post("/v1/embeddings/text")
 def process_text(
@@ -150,3 +206,52 @@ async def process_vision(
         "vision_embedding": vision_embedding.tolist(),
         "text_embedding": text_embedding.tolist()
     }
+
+@app.post("/v1/embeddings/vision/url")
+async def process_vision_url(img_url:Url,model: Any = Depends(get_embedding_model)):
+
+    image_bytes = await img_url.get_image_bytes()
+    if len(image_bytes) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Empty image file."
+            )
+    elif len(image_bytes) > MAX_IMAGE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail="Image file size exceeds the maximum limit."
+            )
+    validate_image(image_bytes)
+    vision_embedding, text_embedding = model.process_vision(image=image_bytes)
+    return {
+        "vision_embedding": vision_embedding.tolist(),
+        "text_embedding": text_embedding.tolist()
+    }
+
+
+@app.post("/v1/embeddings/vision/base64")
+async def process_vision_base64(
+    img_data: str,
+    model: Any = Depends(get_embedding_model),
+):
+    image_bytes = safe_b64decode(img_data)
+    if len(image_bytes) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Empty image file."
+        )
+    elif len(image_bytes) > MAX_IMAGE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="Image file size exceeds the maximum limit."
+        )
+    validate_image(image_bytes)
+    vision_embedding, text_embedding = model.process_vision(image=image_bytes)
+    return {
+        "vision_embedding": vision_embedding.tolist(),
+        "text_embedding": text_embedding.tolist()
+    }
+
+
+
+
